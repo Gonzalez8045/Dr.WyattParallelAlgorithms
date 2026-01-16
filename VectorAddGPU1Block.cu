@@ -1,4 +1,4 @@
-// Name:
+// Name: Fabian Gonzalez
 // Vector addition on the GPU, with one block
 // To compile: nvcc B_VectorAddGPU1Block.cu -o temp
 /*
@@ -67,7 +67,7 @@
 #include <stdio.h>
 
 // Defines
-#define N 500 // Length of the vector
+#define N 1500 // Length of the vector
 
 // Global variables
 float *A_CPU, *B_CPU, *C_CPU; //CPU pointers
