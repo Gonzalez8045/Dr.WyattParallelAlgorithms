@@ -52,6 +52,7 @@ int main()
 		printf(" ---General Information for device %d ---\n", i);
 		printf("Name: %s\n", prop.name);
 		printf("Compute capability: %d.%d\n", prop.major, prop.minor);
+		printf("PCI Identifiers: Bus:%d. Domain:%d. Device:%d\n", prop.pciBusID, prop.pciDomainID, prop.pciDeviceID);
 		printf("Clock rate: %d\n", prop.clockRate);
 		printf("Device copy overlap: ");
 		if (prop.deviceOverlap) printf("Enabled\n");
