@@ -1,4 +1,4 @@
-// Name:
+// Name: Fabian GonzalezS
 // Robust Vector Dot product 
 // nvcc J_GeneralDotProductWithAtomics.cu -o temp
 /*
@@ -46,204 +46,346 @@
  From now on, we’ll focus on refining that knowledge and adding advanced features.
 */
 
-//Header Files
+// Include files
+#include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <sys/time.h>
-#include <cuda.h>
+#include <cuda_runtime.h>
 
-//Pre-compile variables
-#define N 100000000          // Original vector length
-#define BLOCK_SIZE 1024      // Threads per block
-#define TOLERANCE 0.01       // Percent error tolerance
+// Defines
+#define N 100000 // Length of the vector
+#define BLOCK_SIZE 1024 // Threads in a block
 
-// CPU and GPU pointers
-float *A_CPU, *B_CPU, *C_CPU;
-float *A_GPU, *B_GPU, *C_GPU;
+// Global variables
+float *A_CPU, *B_CPU, *C_CPU; //CPU pointers
+float *A_GPU, *B_GPU, *resultGPU; //GPU pointers
 float DotCPU, DotGPU;
-
-// Grid and block sizes
-dim3 BlockSize;
-dim3 GridSize;
+dim3 BlockSize; //This variable will hold the Dimensions of your blocks
+dim3 GridSize; //This variable will hold the Dimensions of your grid
+float Tolerance = 0.01;
 
 // Function prototypes
-void cudaErrorCheck(const char*, int);
-unsigned int nextPowerOf2(unsigned int N);
-void allocateMemory(int paddedN);
-void initializeVectors(int N, int paddedN);
-void dotProductCPU(float*, float*, int);
-long elapsedTime(struct timeval, struct timeval);
-bool check(float cpuVal, float gpuVal, float tolerance);
-int chooseBestDevice(int paddedN);
+void cudaErrorCheck(const char *, int);
+void setUpDevices(int N);
+void allocateMemory(int, int);
+void innitialize();
+void dotProductCPU(float*, float*, float*, int);
+int nextPowerOfTwo(int N);
+void padding(int, int);
+__global__ void dotProductGPU(float*, float*, float*, int);
+int bestGPU(int N);
+bool  check(float, float, float);
+long elaspedTime(struct timeval, struct timeval);
+void CleanUp();
 
-// CUDA kernel
-__global__ void dotProductGPU(float *a, float *b, float *c, int n) {
-    __shared__ float c_sh[BLOCK_SIZE];
-    int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + tid;
+// This check to see if an error happened in your CUDA code. It tell you what it thinks went wrong,
+// and what file and line it occured on.
+void cudaErrorCheck(const char *file, int line)
+{
+	cudaError_t  error;
+	error = cudaGetLastError();
 
-    c_sh[tid] = (idx < n) ? (a[idx] * b[idx]) : 0.0f;
-    __syncthreads();
+	if(error != cudaSuccess)
+	{
+		printf("\n CUDA ERROR: message = %s, File = %s, Line = %d\n", cudaGetErrorString(error), file, line);
+		exit(0);
+	}
+}
 
-    int fold = blockDim.x / 2;
-    while (fold > 0) {
-        if (tid < fold)
-            c_sh[tid] += c_sh[tid + fold];
-        __syncthreads();
-        fold /= 2;
+
+//This function will check the next power of two.
+int nextPowerOfTwo(int N)
+{
+	//Power and Result for equation
+    int power = 1;
+	int result = 1;
+
+    //Now, we do a while loop to check for the next value, which will compare the power of two next to the vector number N
+    while(result < N)
+    {
+        //Our result will be 1 at the beggining (2^0 = 1)
+        
+
+        //We set up a for loop using our power, and will increment it after each iteration
+        for(int i = 0; i < power; i++)
+        {
+            result *= 2; //This computes the power
+        }
+
+        power++; //If the prior power didn't work, incremnet it and check again against N, else, do all the prior operation
     }
 
-    if (tid == 0)
-        atomicAdd(c, c_sh[0]);
+    return result; //This will gives us the next power of 2.
 }
 
-// Check CUDA errors
-void cudaErrorCheck(const char *file, int line) {
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error: %s | File: %s | Line: %d\n", cudaGetErrorString(err), file, line);
-        exit(1);
-    }
+//This function will padd our GPU vectors;
+void padding(int N, int pN)
+{
+        cudaMemset(A_GPU + N, 0, (pN - N)*sizeof(float));
+        cudaMemset(B_GPU + N, 0, (pN - N)*sizeof(float));
 }
 
-// Next power of 2 function
-unsigned int nextPowerOf2(unsigned int N) {
-    if (N == 0) return 1;
-    double exp = ceil(log2((double)N));
-    return 1 << (unsigned int)exp;
+// This is the kernel. It is the function that will run on the GPU.
+// It adds vectors a and b on the GPU then stores result in vector c.
+__global__ void dotProductGPU(float *a, float *b, float *c, int n)
+{
+	int threadIndex = threadIdx.x;
+	int vectorIndex = threadIdx.x + blockDim.x*blockIdx.x;
+	__shared__ float c_sh[BLOCK_SIZE];
+	
+	    c_sh[threadIndex] = (a[vectorIndex] * b[vectorIndex]);
+	__syncthreads();
+	
+	int fold = blockDim.x;
+	while(1 < fold)
+	{
+		if(fold%2 != 0)
+		{
+			if(threadIndex == 0 && (vectorIndex + fold - 1) < n)
+			{
+				c_sh[0] = c_sh[0] + c_sh[0 + fold - 1];
+			}
+			fold = fold - 1;
+		}
+		fold = fold/2;
+		if(threadIndex < fold && (vectorIndex + fold) < n)
+		{
+			c_sh[threadIndex] = c_sh[threadIndex] + c_sh[threadIndex + fold];
+			
+		}
+		__syncthreads();
+	}
+	
+    if(threadIndex == 0)
+        atomicAdd(c, c_sh[threadIndex]);
 }
 
-// Allocate memory on CPU and GPU
-void allocateMemory(int paddedN) {
-    A_CPU = (float*)malloc(paddedN * sizeof(float));
-    B_CPU = (float*)malloc(paddedN * sizeof(float));
-    C_CPU = (float*)malloc(sizeof(float));
+//This function will decide the best GPU to use, comparing major and minors
+int bestGPU(int N)
+{
+    //Check how many devices you have
+    int deviceCount, bestGPU, bestMajor, bestMinor;
+    cudaGetDeviceCount(&deviceCount);
 
-    cudaMalloc(&A_GPU, paddedN * sizeof(float));
-    cudaErrorCheck(__FILE__, __LINE__);
-    cudaMalloc(&B_GPU, paddedN * sizeof(float));
-    cudaErrorCheck(__FILE__, __LINE__);
-    cudaMalloc(&C_GPU, sizeof(float)); // only need one float
-    cudaErrorCheck(__FILE__, __LINE__);
-}
+    //Assume none are good at first
+    bestGPU = -1;
+    bestMajor = 0;
+    bestMinor = 0;
 
-// Initialize vectors and zero-pad
-void initializeVectors(int N, int paddedN) {
-    for (int i = 0; i < N; i++) {
-        A_CPU[i] = (float)i;
-        B_CPU[i] = (float)(3 * i);
-    }
-    for (int i = N; i < paddedN; i++) {
-        A_CPU[i] = 0.0f;
-        B_CPU[i] = 0.0f;
-    }
-}
+    for(int i = 0; i < deviceCount; i++)
+    {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
 
-// CPU dot product
-void dotProductCPU(float *a, float *b, int n) {
-    float sum = 0.0f;
-    for (int i = 0; i < n; i++)
-        sum += a[i] * b[i];
-    DotCPU = sum;
-}
+        //Get your major and minor from properties
+        int propMajor, propMinor;
+        propMajor = prop.major;
+        propMinor = prop.minor;
 
-// Time difference in microseconds
-long elapsedTime(struct timeval start, struct timeval end) {
-    return (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
-}
+        //First, check that the major is greater than 3 (so it can do floats)
+        if(propMajor < 3)
+            continue; //This just says "if you can't do floats, shut up"
 
-// Check percent error
-bool check(float cpuVal, float gpuVal, float tolerance) {
-    double percentError = fabs((gpuVal - cpuVal) / cpuVal) * 100.0;
-    printf("Percent error: %lf%%\n", percentError);
-    return (percentError < tolerance);
-}
+        //Now, if they pass that check, see if they have enough threads to do the operation
+        int threadCount = prop.maxThreadsPerMultiProcessor*prop.multiProcessorCount;
 
-// Choose the best device
-int chooseBestDevice(int paddedN) {
-    int count;
-    cudaGetDeviceCount(&count);
-    if (count == 0) return -1;
-
-    int best = -1;
-    int maxThreads = 0;
-
-    for (int i = 0; i < count; i++) {
-        cudaDeviceProp p;
-        cudaGetDeviceProperties(&p, i);
-
-        int totalThreads = p.maxThreadsPerMultiProcessor * p.multiProcessorCount;
-        if (totalThreads < paddedN) continue;
-        if (p.major < 3) continue; // atomicAdd on float requires compute capability 3.0+
-
-        if (totalThreads > maxThreads) {
-            maxThreads = totalThreads;
-            best = i;
+        if(threadCount < N)
+            continue;
+        
+        //After this check if you have a better major and minor:
+        if(propMajor > bestMajor)
+        {
+            if(propMinor > bestMinor)
+            {
+                bestGPU = i; //If you do, you are prolly the better GPU.
+            }
         }
     }
-    return best;
+
+    return bestGPU; //return whatever value you get.
 }
 
-// Cleanup
-void cleanUp(int paddedN) {
-    free(A_CPU); free(B_CPU); free(C_CPU);
-    cudaFree(A_GPU); cudaFree(B_GPU); cudaFree(C_GPU);
+// This will be the layout of the parallel space we will be using.
+void setUpDevices(int N)
+{
+	BlockSize.x = BLOCK_SIZE;
+	BlockSize.y = 1;
+	BlockSize.z = 1;
+	
+	GridSize.x = (N - 1)/BlockSize.x + 1; // This gives us the correct number of blocks.
+	GridSize.y = 1;
+	GridSize.z = 1;
 }
 
-int main() {
-    struct timeval start, end;
-    long timeCPU, timeGPU;
+// Allocating the memory we will be using.
+void allocateMemory(int N, int pN)
+{	
+	// Host "CPU" memory.				
+	A_CPU = (float*)malloc(N*sizeof(float));
+	B_CPU = (float*)malloc(N*sizeof(float));
+	C_CPU = (float*)malloc(N*sizeof(float));
+	
+	// Device "GPU" Memory
+	cudaMalloc(&A_GPU,pN*sizeof(float));
+	cudaErrorCheck(__FILE__, __LINE__);
+	cudaMalloc(&B_GPU,pN*sizeof(float));
+	cudaErrorCheck(__FILE__, __LINE__);
+	cudaMalloc(&resultGPU, sizeof(float));
+	cudaErrorCheck(__FILE__, __LINE__);
+}
 
-    unsigned int vectorSize = N;
-    unsigned int paddedSize = nextPowerOf2(vectorSize);
+// Loading values into the vectors that we will doting.
+void innitialize()
+{
+	for(int i = 0; i < N; i++)
+	{		
+		A_CPU[i] = (float)i;	
+		B_CPU[i] = (float)(3*i);
+	}
+}
 
-    int bestDevice = chooseBestDevice(paddedSize);
-    if(bestDevice == -1) {
-        printf("No suitable GPU found.\n");
-        return 1;
+// Adding vectors a and b on the CPU then stores result in vector c.
+void dotProductCPU(float *a, float *b, float *C_CPU, int n)
+{
+	for(int id = 0; id < n; id++)
+	{ 
+		C_CPU[id] = a[id] * b[id];
+	}
+	
+	for(int id = 1; id < n; id++)
+	{ 
+		C_CPU[0] += C_CPU[id];
+	}
+}
+
+// Checking to see if anything went wrong in the vector addition.
+bool check(float cpuAnswer, float gpuAnswer, float tolerence)
+{
+	double percentError;
+	
+	percentError = fabs((gpuAnswer - cpuAnswer)/(cpuAnswer))*100.0;
+	printf("\n\n percent error = %lf\n", percentError);
+	
+	if(percentError < Tolerance) 
+	{
+		return(true);
+	}
+	else 
+	{
+		return(false);
+	}
+}
+
+// Calculating elasped time.
+long elaspedTime(struct timeval start, struct timeval end)
+{
+	// tv_sec = number of seconds past the Unix epoch 01/01/1970
+	// tv_usec = number of microseconds past the current second.
+	
+	long startTime = start.tv_sec * 1000000 + start.tv_usec; // In microseconds.
+	long endTime = end.tv_sec * 1000000 + end.tv_usec; // In microseconds
+
+	// Returning the total time elasped in microseconds
+	return endTime - startTime;
+}
+
+// Cleaning up memory after we are finished.
+void CleanUp()
+{
+	// Freeing host "CPU" memory.
+	free(A_CPU); 
+	free(B_CPU); 
+	free(C_CPU);
+	
+	cudaFree(A_GPU); 
+	cudaErrorCheck(__FILE__, __LINE__);
+	cudaFree(B_GPU); 
+	cudaErrorCheck(__FILE__, __LINE__);
+	cudaFree(resultGPU);
+	cudaErrorCheck(__FILE__, __LINE__);
+}
+
+int main()
+{
+    //We need to set up the values for N and the padded N, which will be integer values
+    int vectorNum = N;
+    int paddedVec = nextPowerOfTwo(N);
+
+	timeval start, end;
+	long timeCPU, timeGPU;
+	//float localC_CPU, localC_GPU;
+	
+
+    //Now, check which GPU is the best, before setting it:
+    int usedGPU = bestGPU(paddedVec);
+    
+    //If you don't have a GPU that can do this, this program can't be run.
+    if(usedGPU == -1)
+    {
+        printf("This operation cannot be performed\n");
+        printf("It might be time to upgrade\n");
+        printf("Goodbye");
+        exit(0);
     }
 
-    cudaSetDevice(bestDevice);
-    int currentDevice;
-    cudaGetDevice(&currentDevice);
-    printf("Using GPU device %d\n", currentDevice);
+	// Setting up the GPU
+	setUpDevices(paddedVec);
+	
+	// Allocating the memory you will need.
+	allocateMemory(vectorNum, paddedVec);
+	
+	// Putting values in the vectors.
+	innitialize();
+	
+	// Adding on the CPU
+	gettimeofday(&start, NULL);
+	dotProductCPU(A_CPU, B_CPU, C_CPU, N);
+	DotCPU = C_CPU[0];
+	gettimeofday(&end, NULL);
+	timeCPU = elaspedTime(start, end);
+	
+	// Adding on the GPU
+	gettimeofday(&start, NULL);
+	
+	// Copy Memory from CPU to GPU		
+	cudaMemcpyAsync(A_GPU, A_CPU, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaErrorCheck(__FILE__, __LINE__);
+	cudaMemcpyAsync(B_GPU, B_CPU, N*sizeof(float), cudaMemcpyHostToDevice);
+	cudaErrorCheck(__FILE__, __LINE__);
+	
+	dotProductGPU<<<GridSize,BlockSize>>>(A_GPU, B_GPU, resultGPU, N);
+	cudaErrorCheck(__FILE__, __LINE__);
+	
+	// Copy Memory from GPU to CPU	
+	cudaMemcpyAsync(&DotGPU, resultGPU, sizeof(float), cudaMemcpyDeviceToHost);
+	cudaErrorCheck(__FILE__, __LINE__);
+	
+	// Making sure the GPU and CPU wiat until each other are at the same place.
+	cudaDeviceSynchronize();
+	cudaErrorCheck(__FILE__, __LINE__);
+	
 
-    // Grid/block
-    BlockSize.x = BLOCK_SIZE; BlockSize.y = 1; BlockSize.z = 1;
-    GridSize.x = (paddedSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    GridSize.y = 1; GridSize.z = 1;
-
-    allocateMemory(paddedSize);
-    initializeVectors(vectorSize, paddedSize);
-
-    // CPU dot product
-    gettimeofday(&start, NULL);
-    DotCPU = 0.0f;
-    for(int i=0;i<paddedSize;i++) DotCPU += A_CPU[i]*B_CPU[i];
-    gettimeofday(&end, NULL);
-    timeCPU = elapsedTime(start, end);
-
-    // GPU dot product
-    cudaMemset(C_GPU, 0, sizeof(float));
-    cudaMemcpy(A_GPU, A_CPU, paddedSize*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(B_GPU, B_CPU, paddedSize*sizeof(float), cudaMemcpyHostToDevice);
-    cudaDeviceSynchronize();
-
-    gettimeofday(&start, NULL);
-    dotProductGPU<<<GridSize, BlockSize>>>(A_GPU, B_GPU, C_GPU, paddedSize);
-    cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-
-    cudaMemcpy(&DotGPU, C_GPU, sizeof(float), cudaMemcpyDeviceToHost);
-
-    timeGPU = elapsedTime(start, end);
-
-    printf("CPU: %f | GPU: %f\n", DotCPU, DotGPU);
-    if(check(DotCPU, DotGPU, TOLERANCE)) printf("GPU result is correct!\n");
-    else printf("GPU result is incorrect!\n");
-
-    printf("CPU time: %ld us | GPU time: %ld us\n", timeCPU, timeGPU);
-    cleanUp();
-    return 0;
+	gettimeofday(&end, NULL);
+	timeGPU = elaspedTime(start, end);
+	
+	// Checking to see if all went correctly.
+	if(check(DotCPU, DotGPU, Tolerance) == false)
+	{
+		printf("\n\n Something went wrong in the GPU dot product.\n");
+	}
+	else
+	{
+		printf("\n\n You did a dot product correctly on the GPU");
+		printf("\n The time it took on the CPU was %ld microseconds", timeCPU);
+		printf("\n The time it took on the GPU was %ld microseconds", timeGPU);
+	}
+	
+	// Your done so cleanup your room.	
+	CleanUp();	
+	
+	// Making sure it flushes out anything in the print buffer.
+	printf("\n\n");
+	
+	return(0);
 }
