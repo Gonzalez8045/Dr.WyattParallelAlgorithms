@@ -1,4 +1,4 @@
-// Name:
+// Name: Fabian Gonzalez
 // Two body problem
 // nvcc R_TwoBodyToNBodyCPU.cu -o temp -lglut -lGLU -lGL
 //To stop hit "control c" in the window you launched it from.
