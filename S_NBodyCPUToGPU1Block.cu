@@ -1,4 +1,4 @@
-// Name:
+// Name: Fabian Gonzalez
 // Creating a GPU nBody simulation from an nBody CPU simulation. 
 // nvcc S_NBodyCPUToGPU1Block.cu -o temp -lglut -lm -lGLU -lGL
 
