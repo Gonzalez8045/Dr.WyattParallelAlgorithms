@@ -1,4 +1,4 @@
-// Name:
+// Name: Fabian Gonzalez
 // nBody code on multiple GPUs. 
 // nvcc U_1GPU_To_2GPUs_NBody.cu -o temp -lglut -lm -lGLU -lGL
 
